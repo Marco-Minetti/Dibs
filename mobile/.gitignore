@@ -1,0 +1,21 @@
+# deps & generated web bundle
+node_modules/
+www/
+
+# Android build artifacts (the android/ project itself is kept)
+android/.gradle/
+android/build/
+android/app/build/
+android/captures/
+android/.idea/
+android/local.properties
+android/app/src/main/assets/public/
+
+# signing — NEVER commit these
+*.keystore
+*.jks
+keystore.properties
+*.aab
+*.apk
+
+.DS_Store

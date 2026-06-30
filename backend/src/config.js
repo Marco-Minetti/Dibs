@@ -36,7 +36,7 @@ export const config = {
 
   // CORS — comma-separated list of allowed origins
   corsOrigins: (process.env.CORS_ORIGINS ||
-    'http://localhost:5173,http://localhost:3000,capacitor://localhost,http://localhost')
+    'http://localhost:5173,http://localhost:3000,capacitor://localhost,http://localhost,https://localhost')
     .split(',').map(s => s.trim()).filter(Boolean),
 
   // Email (Resend by default; dev logs to console)
@@ -53,4 +53,15 @@ export const config = {
 
   // Restrict signups to .edu (set false only for testing)
   requireEdu: process.env.REQUIRE_EDU !== 'false',
+
+  // ---- payments (Stripe) ----
+  // Test keys (sk_test_… / pk_test_…) let you run the whole flow with card 4242…
+  stripeSecret:        process.env.STRIPE_SECRET_KEY || '',
+  stripePublishableKey:process.env.STRIPE_PUBLISHABLE_KEY || '',
+  stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+  currency:            (process.env.CURRENCY || 'eur').toLowerCase(),
+  // platform commission in basis points (e.g. 500 = 5%). Applied as a Stripe
+  // application fee on destination charges when the seller has a payout account.
+  platformFeeBps:      parseInt(process.env.PLATFORM_FEE_BPS || '0', 10),
+  get paymentsEnabled() { return !!this.stripeSecret; },
 };

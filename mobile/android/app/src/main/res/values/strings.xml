@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">dibs</string>
+    <string name="title_activity_main">dibs</string>
+    <string name="package_name">app.dibs.mobile</string>
+    <string name="custom_url_scheme">app.dibs.mobile</string>
+</resources>

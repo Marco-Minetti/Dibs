@@ -1,0 +1,73 @@
+# ============================================================
+#  Render Blueprint for the dibs backend
+#  One-click deploy: push this repo to GitHub, then in Render
+#  → "New +" → "Blueprint" → pick this repo. Render reads this file,
+#  creates the Postgres database + the API web service, runs the
+#  migrations, and gives you an HTTPS url automatically.
+#
+#  After it deploys, set the SECRET env vars (marked "sync: false")
+#  in the Render dashboard: Resend, S3/R2, and Stripe keys.
+# ============================================================
+databases:
+  - name: dibs-db
+    plan: free                 # free Postgres (expires after 90 days — fine for testing)
+    region: frankfurt          # closest to you; match the web service region
+
+services:
+  - type: web
+    name: dibs-api
+    runtime: node
+    region: frankfurt
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    preDeployCommand: npm run migrate     # runs DB migrations before each deploy
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render injects PORT automatically — the server already reads it.
+      - key: PG_SSL
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: dibs-db
+          property: connectionString
+      # Strong secrets generated once by Render and kept stable:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CODE_PEPPER
+        generateValue: true
+      # Native app origins + your web origin (edit to add your domain):
+      - key: CORS_ORIGINS
+        value: capacitor://localhost,https://localhost,http://localhost
+      - key: REQUIRE_EDU
+        value: "true"
+      - key: CURRENCY
+        value: eur
+
+      # ---- Fill these in the Render dashboard (kept out of git) ----
+      - key: RESEND_API_KEY          # email login codes (else they print to logs)
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT             # set for Cloudflare R2 / MinIO, blank for AWS
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: CDN_BASE_URL
+        sync: false
+      - key: STRIPE_SECRET_KEY       # sk_test_… to start
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY  # pk_test_…
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET   # whsec_…
+        sync: false

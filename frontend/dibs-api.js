@@ -112,6 +112,12 @@ class DibsAPI {
   messages(convId) { return this.req('GET', `/api/conversations/${convId}/messages`); }
   sendMessage(convId, text) { return this.req('POST', `/api/conversations/${convId}/messages`, { body: text }); }
 
+  // ================= payments =================
+  paymentsConfig() { return this.req('GET', '/api/payments/config'); }
+  paymentIntent(listingId) { return this.req('POST', '/api/payments/intent', { listingId }); }
+  paymentStatus(listingId) { return this.req('GET', `/api/payments/listing/${listingId}`); }
+  startPayout() { return this.req('POST', '/api/payments/connect'); }
+
   // ================= safety =================
   report(targetType, targetId, reason, detail) {
     return this.req('POST', '/api/safety/report', { targetType, targetId, reason, detail });

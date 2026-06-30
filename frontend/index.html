@@ -7,18 +7,25 @@
 <!--
   dibs — phone app (frontend)
   ───────────────────────────────────────────────────────────────
-  Runs standalone in DEMO MODE: open this file in a browser and the
-  app works with sample data (login verification code is 1234).
-
-  To run it against the real backend instead, start the API (see the
-  project README), then uncomment the two lines below and follow the
-  integration table in README.md to swap the in-memory data for
-  window.dibs.* calls.
-
-  <script>window.DIBS_API_BASE = 'http://localhost:4000';</script>
-  <script src="dibs-api.js"></script>
+  LIVE MODE (default): talks to the real backend at DIBS_API_BASE.
+  DEMO MODE: set DIBS_API_BASE to '' below and the app runs offline
+  on sample data (handy for quick previews / store-reviewer fallback;
+  demo verification code is 1234).
   ───────────────────────────────────────────────────────────────
 -->
+<script>
+  // ── API endpoint ──────────────────────────────────────────────
+  // Dev:      http://localhost:4000
+  // Prod:     set this to your deployed HTTPS url, e.g.
+  //           'https://api.dibs.yourdomain.app'
+  // Demo:     set to '' to run fully offline on sample data.
+  // The Capacitor build injects window.__DIBS_API_BASE__ at build time.
+  window.DIBS_API_BASE =
+    (typeof window.__DIBS_API_BASE__ === 'string' ? window.__DIBS_API_BASE__ : null)
+    ?? 'http://localhost:4000';
+</script>
+<script src="dibs-api.js"></script>
+<script src="https://js.stripe.com/v3/"></script>
 
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Caveat:wght@600;700&display=swap');
@@ -419,16 +426,18 @@ main::-webkit-scrollbar{display:none}
     <section class="gate" id="gate-verify" hidden aria-label="Verify your school email">
       <div class="glogo">dibs<span class="star">✶</span></div>
       <h2 class="gh2">check your inbox 📬</h2>
-      <p class="gp">we emailed a 4-digit code to <b id="sentline">you@school.edu</b> to prove you're a real student.</p>
+      <p class="gp">we emailed a 6-digit code to <b id="sentline">you@school.edu</b> to prove you're a real student.</p>
 
       <label class="lab">enter your code</label>
       <div class="codes">
-        <input class="code" maxlength="4" inputmode="numeric" autocomplete="one-time-code" aria-label="Code digit 1">
+        <input class="code" maxlength="6" inputmode="numeric" autocomplete="one-time-code" aria-label="Code digit 1">
         <input class="code" maxlength="1" inputmode="numeric" aria-label="Code digit 2">
         <input class="code" maxlength="1" inputmode="numeric" aria-label="Code digit 3">
         <input class="code" maxlength="1" inputmode="numeric" aria-label="Code digit 4">
+        <input class="code" maxlength="1" inputmode="numeric" aria-label="Code digit 5">
+        <input class="code" maxlength="1" inputmode="numeric" aria-label="Code digit 6">
       </div>
-      <div class="democode">psst — the demo code is 1234 🤫</div>
+      <div class="democode" id="democode" hidden>psst — the demo code is 1234 🤫</div>
       <div><span class="vstamp" id="vstamp" hidden>✓ verified student</span></div>
 
       <button class="gbtn" id="verifybtn" data-act="verify">verify me ✓</button>
@@ -588,6 +597,17 @@ main::-webkit-scrollbar{display:none}
           <h3>it's live!</h3>
           <p>your hall can see it right now</p>
           <button class="cta" data-act="seeBoard">see it on the board →</button>
+        </div>
+      </div>
+      <div class="overlay" id="payOverlay">
+        <div class="ocard" style="text-align:left;max-width:380px">
+          <button data-act="payclose" aria-label="Close" style="position:absolute;top:12px;right:14px;border:0;background:transparent;font-size:20px;cursor:pointer;color:var(--ink-soft)">✕</button>
+          <div class="oe" style="margin:0 auto 6px">🔒</div>
+          <h3 id="payTitle" style="text-align:center">secure payment</h3>
+          <p id="paySub" style="text-align:center">pay the seller through dibs</p>
+          <div id="payElement" style="margin:14px 0 6px;min-height:40px"></div>
+          <div id="payErr" hidden style="color:var(--tomato);font-size:13px;margin:4px 2px 8px"></div>
+          <button class="cta" id="payBtn" data-act="paynow">pay</button>
         </div>
       </div>
     </div>
@@ -756,21 +776,140 @@ function toast(msg){
 }
 function shake(el){ el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake'); }
 
+/* ================= backend integration ================= */
+/* When DIBS_API_BASE is set, the app talks to the real API (window.dibs).
+   When it's '', everything below short-circuits and the original in-memory
+   demo behaviour runs instead. */
+const API = window.dibs || null;
+const API_MODE = !!(window.DIBS_API_BASE && API);
+if(!API_MODE){ const _dc=document.getElementById('democode'); if(_dc) _dc.hidden=false; }
+
+// pickup-spot labels (UI)  ⇄  backend enum
+const SPOT_TO_API = {'my room':'my_room','my house':'my_house','around campus':'around_campus'};
+const SPOT_FROM_API = {my_room:'my room', my_house:'my house', around_campus:'around campus'};
+
+// "just now / 2h / 3d" from an ISO timestamp
+function ago(iso){
+  const s = Math.max(1,(Date.now()-new Date(iso).getTime())/1000);
+  if(s<90) return 'just now';
+  if(s<3600) return Math.round(s/60)+'m';
+  if(s<86400) return Math.round(s/3600)+'h';
+  return Math.round(s/86400)+'d';
+}
+
+// backend listing  →  the card shape the demo's render code already expects
+function toCard(l){
+  const photos = (l.photos||[]).map(p=> p.url ? {img:p.url} : {e:'📷'});
+  if(!photos.length) photos.push({e:'📦'});
+  const card = {
+    id: l.id,                                   // uuid string
+    e: photos[0].e || '📦',
+    ph: photos,
+    t: l.title,
+    d: l.description || 'Message me to set up a pickup time.',
+    p: l.isFree ? 0 : Math.round((l.priceCents||0)/100),
+    cat: l.category,
+    cond: l.condition,
+    spot: SPOT_FROM_API[l.pickupSpot] || l.pickupSpot || 'around campus',
+    dorm: '', walk: 0,
+    time: l.createdAt ? ago(l.createdAt) : 'just now',
+    until: l.expiresAt ? new Date(l.expiresAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '',
+    s: {
+      n: l.seller?.firstName || 'Student',
+      a: l.seller?.avatarEmoji || '🦊',
+      y: '', r: Number(l.seller?.rating ?? 5),
+    },
+    taken: l.status && l.status !== 'active',
+    mine: !!l.mine,
+    _api: l,
+  };
+  if(l.favored) state.saved.add(card.id);
+  if(l.claimedByMe) state.myDibs.add(card.id);
+  return card;
+}
+
+// backend conversation  →  the chat row shape the demo expects
+function toChat(c){
+  return {
+    id: c.id,
+    with: { n: c.other?.firstName || 'Student', a: c.other?.avatarEmoji || '🦊' },
+    item: { e: '📦', t: c.listingTitle || '', img: c.listingPhoto || null },
+    itemId: c.listingId,
+    status: c.lastAt ? ago(c.lastAt)+' ago' : 'new',
+    unread: c.unread > 0,
+    role: c.role,
+    msgs: [],            // filled lazily on open
+    preview: c.lastMessage || '',
+    _loaded: false,
+  };
+}
+
+function apiError(e, fallback){
+  const map = {
+    not_edu:'use your school .edu email ✉️',
+    email_school_mismatch:'that email doesn’t match the school you picked',
+    code_invalid:'that code isn’t right',
+    too_many_codes:'too many codes — wait a minute',
+    too_many_attempts:'too many tries — request a new code',
+    already_claimed:'someone grabbed it first 😬',
+    own_listing:'that’s your own listing',
+    other_campus:'that listing is on another campus',
+  };
+  return map[e?.data?.error] || map[e?.error] || fallback || 'something went wrong';
+}
+
+// pull the campus feed and hand it to the existing renderer
+async function loadFeed(){
+  try{
+    const { items } = await API.feed({ category: state.cat==='all'?undefined:state.cat, q: state.q||undefined });
+    listings = (items||[]).map(toCard);
+    if(state.tab==='home') renderGrid();
+  }catch(e){ toast(apiError(e,'couldn’t load the board')); }
+}
+async function loadChats(){
+  try{
+    const { conversations } = await API.conversations();
+    chats = (conversations||[]).map(toChat);
+    if(state.tab==='chats') renderChats();
+    updateBadge();
+  }catch(e){ /* silent */ }
+}
+
 /* ================= gates: login + verify ================= */
+let _apiSchools = [];
 function filterSchools(q){
   q=q.toLowerCase();
   return SCHOOLS.filter(s=> s.n.toLowerCase().includes(q) || (s.s&&s.s.toLowerCase().includes(q))).slice(0,8);
 }
-function renderSchoolList(q){
+async function renderSchoolList(q){
   const box=$('#slist');
   if(!q){ box.hidden=true; return; }
+  if(API_MODE){
+    try{
+      const { schools } = await API.schools(q);
+      _apiSchools = schools||[];
+      box.hidden=false;
+      box.innerHTML = _apiSchools.slice(0,8).map(s=>
+        `<button class="srow" data-act="pickschool" data-id="${esc(s.id)}" data-n="${esc(s.name)}">${s.short?`<b>${esc(s.short)}</b>`:''}<span>${esc(s.name)}</span></button>`
+      ).join('') || `<button class="srow none" data-act="demo">no match — try another name</button>`;
+    }catch(e){ box.hidden=true; }
+    return;
+  }
   const hits=filterSchools(q);
   box.hidden=false;
   box.innerHTML = hits.map(s=>`<button class="srow" data-act="pickschool" data-n="${esc(s.n)}">${s.s?`<b>${esc(s.s)}</b>`:''}<span>${esc(s.n)}</span></button>`).join('')
     + `<button class="srow none" data-act="demo">can't find yours? request your campus →</button>`;
 }
-function pickSchool(name){
-  const sc=SCHOOLS.find(s=>s.n===name); if(!sc) return;
+function pickSchool(name, id){
+  let sc;
+  if(API_MODE){
+    const found = _apiSchools.find(s=>s.id===id) || _apiSchools.find(s=>s.name===name);
+    if(!found) return;
+    sc = { n: found.name, s: found.short, id: found.id };
+  } else {
+    sc = SCHOOLS.find(s=>s.n===name);
+  }
+  if(!sc) return;
   state.user.school=sc;
   $('#schoolPick').hidden=true; $('#slist').hidden=true;
   $('#schipName').textContent='🏫 '+sc.n; $('#schipBox').hidden=false;
@@ -781,20 +920,46 @@ function clearSchool(){
   $('#schipBox').hidden=true; $('#schoolPick').hidden=false;
   $('#schoolq').value=''; $('#schoolq').focus();
 }
-function continueAuth(){
+async function continueAuth(){
   const email=$('#gemail').value.trim().toLowerCase();
   const name=$('#gname').value.trim();
   if(!state.user.school){ shake($('#authbtn')); toast('pick your school first 🏫'); $('#schoolq').focus(); return; }
   if(!/^[^\s@]+@[^\s@]+\.edu$/.test(email)){ shake($('#authbtn')); toast('that needs to be a .edu email ✉️'); $('#gemail').focus(); return; }
   state.user.email=email;
   if(name) state.user.name = name.charAt(0).toUpperCase()+name.slice(1);
+
+  if(API_MODE){
+    const btn=$('#authbtn'); const label=btn.textContent; btn.textContent='sending…'; btn.disabled=true;
+    try{
+      await API.requestCode(email, state.user.school.id, name||undefined);
+    }catch(e){ btn.textContent=label; btn.disabled=false; shake(btn); toast(apiError(e,'couldn’t send a code')); return; }
+    btn.textContent=label; btn.disabled=false;
+  }
+
   $('#sentline').textContent=email;
   $('#gate-auth').hidden=true; $('#gate-verify').hidden=false;
   const c=$$('.code'); c.forEach(i=>i.value=''); $('#vstamp').hidden=true;
   setTimeout(()=>c[0].focus(),60);
 }
-function verifyCode(){
+async function verifyCode(){
   const code=$$('.code').map(i=>i.value).join('');
+
+  if(API_MODE){
+    if(code.length<4){ shake($('#verifybtn')); return; }
+    const btn=$('#verifybtn'); const label=btn.textContent; btn.textContent='checking…'; btn.disabled=true;
+    try{
+      const user = await API.verifyCode(state.user.email, code);
+      state.user.name = user.firstName || state.user.name;
+      state.user.avatar = user.avatarEmoji;
+      state.user.id = user.id;
+    }catch(e){ btn.textContent=label; btn.disabled=false; shake(btn); toast(apiError(e,'that code isn’t right')); return; }
+    btn.textContent=label; btn.disabled=false;
+    $('#vstamp').hidden=false;
+    toast('verified ✓ welcome to '+pillName(state.user.school));
+    setTimeout(enterApp,650);
+    return;
+  }
+
   if(code!=='1234'){ shake($('#verifybtn')); toast('that\u2019s not it — psst, try 1234 😉'); return; }
   $('#vstamp').hidden=false;
   toast('verified ✓ welcome to '+pillName(state.user.school));
@@ -807,9 +972,33 @@ function enterApp(){
   /* personalize */
   $('#campusPill').textContent=pillName(state.user.school);
   $('#pname').textContent=state.user.name;
-  $('#pava').textContent=state.user.name.charAt(0).toUpperCase();
-  $('#pmeta').textContent=pillName(state.user.school)+' · West Hall · 2nd year';
-  renderChips(); renderGrid(); updateBadge();
+  $('#pava').textContent= state.user.avatar || state.user.name.charAt(0).toUpperCase();
+  $('#pmeta').textContent=pillName(state.user.school);
+  renderChips(); updateBadge();
+
+  if(API_MODE){
+    listings = []; chats = [];
+    renderGrid();
+    loadFeed();
+    loadChats();
+    API.connectRealtime(onRealtimeMessage);
+  } else {
+    renderGrid();
+  }
+}
+
+// a websocket message arrived (new chat message pushed from the server)
+function onRealtimeMessage(m){
+  const c = chats.find(x=>x.id===m.conversationId || x.id===m.conversation_id);
+  if(c){
+    if(c._loaded) c.msgs.push({me: m.mine?1:0, x: m.body});
+    c.unread = state.activeChat!==c.id;
+    if(state.activeChat===c.id){ c.unread=false; renderThread(c); const main=$('#main'); main.scrollTop=main.scrollHeight; }
+    if(state.tab==='chats') renderChats();
+    updateBadge();
+  } else {
+    loadChats();   // a brand-new conversation — refresh the inbox
+  }
 }
 
 /* ================= rendering ================= */
@@ -841,6 +1030,7 @@ function cardHTML(it, fresh){
   </article>`;
 }
 function filtered(){
+  if(API_MODE) return listings;   // the server already applied category + search
   return listings.filter(it=>{
     const okCat = state.cat==='all' ? true : state.cat==='free' ? it.p===0 : it.cat===state.cat;
     const okQ = !state.q || it.t.toLowerCase().includes(state.q);
@@ -854,7 +1044,18 @@ function renderGrid(freshId){
     : `<div class="empty" style="grid-column:1/-1"><div class="big">🕳️</div><p>nothing here yet — typical.<br>be the first to post it</p><button class="btn-sm" data-act="tab" data-tab="post">post something</button></div>`;
   $('#count').textContent = items.length + ' things nearby';
 }
-function renderSaved(){
+async function renderSaved(){
+  if(API_MODE){
+    try{
+      const { items } = await API.favorites();
+      const cards = (items||[]).map(toCard);
+      cards.forEach(c=>state.saved.add(c.id));
+      $('#savedGrid').innerHTML = cards.map(it=>cardHTML(it)).join('');
+      $('#savedEmpty').hidden = cards.length>0;
+      $('#scount').textContent = cards.length ? cards.length+' saved' : '';
+    }catch(e){ toast(apiError(e,'couldn’t load saved')); }
+    return;
+  }
   const items = listings.filter(it=>state.saved.has(it.id));
   $('#savedGrid').innerHTML = items.map(it=>cardHTML(it)).join('');
   $('#savedEmpty').hidden = items.length>0;
@@ -880,6 +1081,7 @@ function similarHTML(it){
 function openDetail(id){
   const it = listings.find(x=>x.id===id); if(!it) return;
   state.detail = id;
+  state.detailCard = it;
   if(['home','saved','chats','profile'].includes(state.tab)) state.from = state.tab;
   const slides = it.ph.map(p=>`<div class="dslide">${p.img?`<img src="${p.img}" alt="">`:p.e}</div>`).join('');
   const dots = it.ph.length>1 ? `<div class="dots" id="ddots">${it.ph.map((_,i)=>`<i class="${i===0?'on':''}"></i>`).join('')}</div>` : '';
@@ -945,7 +1147,24 @@ function ensureChat(it, withDibs){
   return c;
 }
 function callDibs(id){
-  const it = listings.find(x=>x.id===id); if(!it||it.taken||it.mine) return;
+  const it = listings.find(x=>x.id===id); if(!it||it.mine) return;
+  if(API_MODE){
+    (async()=>{
+      try{
+        const { conversationId } = await API.callDibs(id);
+        state.myDibs.add(id); it.taken = true;
+        if(state.detail===id && state.detailCard) syncCTA(it);
+        toast('dibs called — on hold for you 🤙');
+        await loadChats();
+        if(conversationId) openChat(conversationId);
+      }catch(e){
+        if(e?.data?.error==='already_claimed'){ it.taken=true; if(state.detail===id) syncCTA(it); }
+        toast(apiError(e,'couldn’t call dibs'));
+      }
+    })();
+    return;
+  }
+  if(it.taken) return;
   state.myDibs.add(id); it.taken = true;
   const c = ensureChat(it, true);
   c.status='you have dibs';
@@ -962,15 +1181,26 @@ function bubbleHTML(m){ return `<div class="bubble ${m.me?'me':'them'}">${esc(m.
 function renderThread(c){
   $('#thread').innerHTML = `<span class="daychip">today</span>` + c.msgs.map(bubbleHTML).join('');
 }
-function openChat(cid){
+async function openChat(cid){
   const c = chats.find(x=>x.id===cid); if(!c) return;
   state.activeChat = cid; c.unread = false;
   $('#thAva').textContent = c.with.a;
   $('#thName').textContent = c.with.n;
-  $('#thItem').textContent = c.item.e+' '+c.item.t;
+  $('#thItem').textContent = (c.item.e||'📦')+' '+c.item.t;
+  if(API_MODE && !c._loaded){
+    try{
+      const { messages } = await API.messages(cid);
+      c.msgs = (messages||[]).map(m=>({me: m.mine?1:0, x: m.body}));
+      c._loaded = true;
+    }catch(e){ /* show what we have */ }
+  }
   renderThread(c);
   $('#qrow').innerHTML = ['is this still available?','can i pick up today?','would you take a bit less?']
     .map(q=>`<button class="qr" data-act="qr" data-x="${q}">${q}</button>`).join('');
+  if(API_MODE && c.role==='buying' && c.itemId){
+    $('#qrow').insertAdjacentHTML('afterbegin',
+      `<button class="qr" data-act="pay" data-id="${c.itemId}" style="background:var(--ink);color:#fff;font-weight:700">pay securely 🔒</button>`);
+  }
   updateBadge();
   showScreen('chat', true);
   requestAnimationFrame(()=>{ $('#main').scrollTop = $('#main').scrollHeight; });
@@ -991,21 +1221,27 @@ function sellerReply(c, text){
 }
 function sendMsg(text){
   const c = chats.find(x=>x.id===state.activeChat); if(!c||!text.trim()) return;
-  c.msgs.push({me:1,x:text.trim()});
+  const body = text.trim();
+  c.msgs.push({me:1,x:body});
   renderThread(c);
   $('#main').scrollTop = $('#main').scrollHeight;
   $('#chatInput').value='';
+  if(API_MODE){
+    API.sendMessage(c.id, body).catch(e=>toast(apiError(e,'message didn’t send')));
+    return;   // the seller's real reply arrives over the websocket
+  }
   sellerReply(c, REPLIES[Math.floor(Math.random()*REPLIES.length)]);
 }
 function chatRowHTML(c){
   const last = c.msgs[c.msgs.length-1];
+  const preview = last ? last.x : (c.preview || 'say hi 👋');
   return `<button class="crow" data-act="openchat" data-chat="${c.id}">
     ${c.unread?'<span class="unread"></span>':''}
     <div class="ava">${c.with.a}</div>
     <div class="who">
       <b>${esc(c.with.n)} <span class="vbadge">✓</span></b>
-      <span class="itm">${c.item.e} ${esc(c.item.t)} · ${c.role==='selling'?'they called dibs':'you\u2019re buying'}</span>
-      <p>${last?esc(last.x):'say hi 👋'}</p>
+      <span class="itm">${c.item.e||'📦'} ${esc(c.item.t)} · ${c.role==='selling'?'they called dibs':'you\u2019re buying'}</span>
+      <p>${esc(preview)}</p>
     </div>
     <span class="st ${c.role==='buying'&&c.status==='asking'?'quiet':''}">${c.status}</span>
   </button>`;
@@ -1048,26 +1284,38 @@ function addVibe(e){
   renderPost();
 }
 function readFiles(files){
-  const reads=[...files].slice(0,3).map(f=>new Promise(res=>{
+  const fileList=[...files].slice(0,3);
+  const reads=fileList.map(f=>new Promise(res=>{
     const r=new FileReader();
-    r.onload=()=>res(r.result);
+    r.onload=()=>res({url:r.result, file:f});
     r.onerror=()=>res(null);
     r.readAsDataURL(f);
   }));
-  Promise.all(reads).then(urls=>{
+  Promise.all(reads).then(items=>{
     let i=firstEmptySlot(state.post.slotIdx);
-    urls.filter(Boolean).forEach(u=>{
+    items.filter(Boolean).forEach(it=>{
       if(i===-1) return;
-      state.post.photos[i]={img:u};
+      state.post.photos[i]={img:it.url, file:it.file};
       i=firstEmptySlot();
     });
     renderPost();
   });
 }
 function photoCount(){ return state.post.photos.filter(Boolean).length; }
+function realPhotos(){ return state.post.photos.filter(p=>p&&p.file); }
 function submitPost(){
   const title = $('#ptitle').value.trim();
   const price = state.post.free ? 0 : parseInt($('#pprice').value,10);
+
+  if(API_MODE){
+    if(realPhotos().length<2){ shake($('#postbtn')); toast('add at least 2 real photos 📸'); return; }
+    if(title.length<2){ shake($('#postbtn')); toast('give it a name ✍️'); return; }
+    if(!state.post.free && !(price>0 && price<1000)){ shake($('#postbtn')); toast('set a price or flip it to free'); return; }
+    if(!state.post.cat){ shake($('#postbtn')); toast('pick a category 🏷️'); return; }
+    submitPostLive(title, price);
+    return;
+  }
+
   if(photoCount()<2){ shake($('#postbtn')); toast('add at least 2 photos 📸 (vibes count!)'); return; }
   if(!title){ shake($('#postbtn')); toast('give it a name ✍️'); return; }
   if(!state.post.free && !(price>0 && price<1000)){ shake($('#postbtn')); toast('set a price or flip it to free'); return; }
@@ -1092,6 +1340,45 @@ function submitPost(){
   state.post={photos:[null,null,null],cat:null,cond:null,spot:null,free:false,slotIdx:0};
   renderPost();
 }
+
+async function submitPostLive(title, price){
+  const btn=$('#postbtn'); const label=btn.textContent;
+  btn.disabled=true; btn.textContent='posting…';
+  try{
+    // 1) upload each real photo straight to storage, collect photo ids
+    const files = realPhotos().map(p=>p.file);
+    const coverUrl = realPhotos()[0].img;
+    btn.textContent='uploading photos…';
+    const photoIds = [];
+    for(const f of files){ photoIds.push(await API.uploadPhoto(f)); }
+
+    // 2) create the listing
+    btn.textContent='posting…';
+    await API.createListing({
+      title,
+      description: '',
+      priceCents: state.post.free ? 0 : price*100,
+      isFree: !!state.post.free,
+      category: state.post.cat,
+      condition: state.post.cond || 'good',
+      pickupSpot: SPOT_TO_API[state.post.spot] || 'around_campus',
+      photoIds,
+    });
+
+    // 3) celebrate + refresh the board
+    $('#oCover').innerHTML = `<img src="${coverUrl}" alt="">`;
+    confetti();
+    $('#overlay').classList.add('show');
+    $('#ptitle').value=''; $('#pprice').value='';
+    state.post={photos:[null,null,null],cat:null,cond:null,spot:null,free:false,slotIdx:0};
+    renderPost();
+    await loadFeed();
+  }catch(e){
+    shake(btn); toast(apiError(e,'couldn’t post — try again'));
+  }finally{
+    btn.disabled=false; btn.textContent=label;
+  }
+}
 function confetti(){
   const box=$('#confettiBox'); box.innerHTML='';
   const cols=['var(--yellow)','var(--tomato)','var(--grass)','var(--card)'];
@@ -1105,14 +1392,14 @@ function confetti(){
 
 /* ---------- profile ---------- */
 function renderProfile(){
-  const mine = listings.filter(l=>l.mine).map(l=>({e:l.e,img:l.ph[0].img,t:l.t,p:l.p,note:'live · 0 dibs yet',cat:l.cat}));
-  const all = [...mine, ...myStatic];
-  $('#mylist').innerHTML = all.map(m=>`
+  const mine = listings.filter(l=>l.mine).map(l=>({e:l.e,img:l.ph[0]&&l.ph[0].img,t:l.t,p:l.p,note:'live · 0 dibs yet',cat:l.cat}));
+  const all = API_MODE ? mine : [...mine, ...myStatic];
+  $('#mylist').innerHTML = all.length ? all.map(m=>`
     <div class="mli ${m.sold?'sold':''}">
       <div class="e" style="--tint:${tint(m.cat)}">${m.img?`<img src="${m.img}" alt="">`:m.e}</div>
       <div class="t"><b>${esc(m.t)}</b><span>${m.note}</span></div>
       <div class="pr">${fmt(m.p)}</div>
-    </div>`).join('');
+    </div>`).join('') : `<div class="empty"><p>nothing posted yet — your listings show up here</p></div>`;
   $('#mcount').textContent = all.filter(m=>!m.sold).length + ' live';
 }
 
@@ -1147,32 +1434,28 @@ document.addEventListener('click', ev=>{
   const act = el.dataset.act;
 
   if(act==='start'){ $('#splash').classList.add('gone'); $('#gate-auth').hidden=false; setTimeout(()=>$('#schoolq').focus(),80); }
-  else if(act==='pickschool'){ pickSchool(el.dataset.n); }
+  else if(act==='pickschool'){ pickSchool(el.dataset.n, el.dataset.id); }
   else if(act==='clearschool'){ clearSchool(); }
   else if(act==='continueAuth'){ continueAuth(); }
   else if(act==='backauth'){ $('#gate-verify').hidden=true; $('#gate-auth').hidden=false; }
   else if(act==='verify'){ verifyCode(); }
   else if(act==='tab'){ goTab(el.dataset.tab); }
   else if(act==='back'){ goBack(); }
-  else if(act==='chip'){ state.cat = el.dataset.cat; renderChips(); renderGrid(); }
-  else if(act==='open'){ openDetail(+el.dataset.id); }
-  else if(act==='fav'){
-    const id=+el.dataset.id;
-    state.saved.has(id)?state.saved.delete(id):state.saved.add(id);
-    el.classList.add('pop');
-    if(state.tab==='home') renderGrid(); else if(state.tab==='saved') renderSaved();
-    toast(state.saved.has(id)?'saved ♥':'removed from saved');
-  }
+  else if(act==='chip'){ state.cat = el.dataset.cat; renderChips(); if(API_MODE) loadFeed(); else renderGrid(); }
+  else if(act==='open'){ openDetail(el.dataset.id); }
+  else if(act==='fav'){ el.classList.add('pop'); toggleFav(el.dataset.id); }
   else if(act==='dfav'){
-    const it = listings.find(x=>x.id===state.detail); if(!it) return;
-    state.saved.has(it.id)?state.saved.delete(it.id):state.saved.add(it.id);
-    syncDetailFav(it);
-    toast(state.saved.has(it.id)?'saved ♥':'removed from saved');
+    const it = listings.find(x=>x.id===state.detail) || (state.detailCard&&state.detailCard.id===state.detail?state.detailCard:null);
+    if(!it) return;
+    toggleFav(it.id, ()=>syncDetailFav(it));
   }
-  else if(act==='dibs'){ callDibs(+el.dataset.id); }
+  else if(act==='dibs'){ callDibs(el.dataset.id); }
   else if(act==='gochat'){ const c=chats.find(x=>x.itemId===state.detail); if(c) openChat(c.id); }
-  else if(act==='msgseller'){ openSellerChat(+el.dataset.id); }
+  else if(act==='msgseller'){ callDibs(el.dataset.id); }
   else if(act==='openchat'){ openChat(el.dataset.chat); }
+  else if(act==='pay'){ openPay(el.dataset.id); }
+  else if(act==='paynow'){ payNow(); }
+  else if(act==='payclose'){ $('#payOverlay').classList.remove('show'); }
   else if(act==='qr'){ sendMsg(el.dataset.x); }
   else if(act==='send'){ sendMsg($('#chatInput').value); }
   else if(act==='slot'){ state.post.slotIdx=+el.dataset.i; const f=$('#file'); f.value=''; f.click(); }
@@ -1184,6 +1467,66 @@ document.addEventListener('click', ev=>{
   else if(act==='seeBoard'){ $('#overlay').classList.remove('show'); goTab('home'); toast('live on the board ✶'); }
   else if(act==='demo'){ toast('not wired up in this demo 😉'); }
 });
+
+// favorite toggle — optimistic, talks to the API in live mode
+async function toggleFav(id, after){
+  const on = state.saved.has(id);
+  on ? state.saved.delete(id) : state.saved.add(id);
+  if(state.tab==='home') renderGrid(); else if(state.tab==='saved') renderSaved();
+  if(after) after();
+  toast(!on?'saved ♥':'removed from saved');
+  if(API_MODE){
+    try{ on ? await API.unfavorite(id) : await API.favorite(id); }
+    catch(e){ on ? state.saved.add(id) : state.saved.delete(id); toast(apiError(e,'couldn’t save')); }
+  }
+}
+
+/* ---------- payments (Stripe) ---------- */
+let _stripe=null, _payElements=null, _payListingId=null;
+async function openPay(listingId){
+  if(!API_MODE){ toast('payments need the live backend'); return; }
+  if(!window.Stripe){ toast('payment library didn’t load'); return; }
+  toast('setting up secure checkout…');
+  let intent;
+  try{
+    intent = await API.paymentIntent(listingId);
+  }catch(e){
+    const m = {payments_unconfigured:'payments aren’t set up yet', dibs_first:'call dibs before paying 🤙',
+               is_free:'this one’s free — just arrange pickup', not_available:'that’s no longer available'};
+    toast(m[e?.data?.error] || apiError(e,'couldn’t start checkout'));
+    return;
+  }
+  if(!intent.publishableKey){ toast('payments aren’t set up yet'); return; }
+  _payListingId = listingId;
+  _stripe = _stripe || Stripe(intent.publishableKey);
+  _payElements = _stripe.elements({ clientSecret: intent.clientSecret, appearance:{ theme:'flat', variables:{ colorPrimary:'#e8552d' } } });
+  const host = $('#payElement'); host.innerHTML='';
+  const pe = _payElements.create('payment'); pe.mount('#payElement');
+  const amt = (intent.amountCents/100).toLocaleString(undefined,{style:'currency',currency:(intent.currency||'eur').toUpperCase()});
+  $('#payTitle').textContent = 'pay '+amt;
+  $('#paySub').textContent = 'paid securely — released to the seller at pickup';
+  $('#payBtn').textContent = 'pay '+amt;
+  $('#payErr').hidden = true;
+  $('#payOverlay').classList.add('show');
+}
+async function payNow(){
+  if(!_stripe || !_payElements) return;
+  const btn=$('#payBtn'); const label=btn.textContent;
+  btn.disabled=true; btn.textContent='processing…';
+  const { error } = await _stripe.confirmPayment({ elements:_payElements, redirect:'if_required' });
+  if(error){
+    $('#payErr').textContent = error.message || 'payment failed';
+    $('#payErr').hidden = false;
+    btn.disabled=false; btn.textContent=label;
+    return;
+  }
+  // success
+  $('#payOverlay').classList.remove('show');
+  toast('paid ✓ — all set for pickup 🎉');
+  const it = listings.find(x=>x.id===_payListingId); if(it){ it.taken=true; }
+  if(state.tab==='home') renderGrid();
+  loadChats();
+}
 
 /* school search */
 $('#schoolq').addEventListener('input', ev=> renderSchoolList(ev.target.value.trim()));
@@ -1198,8 +1541,8 @@ $$('.code').forEach((box,i,arr)=>{
   box.addEventListener('input', ()=>{
     let v=box.value.replace(/\D/g,'');
     if(v.length>1){ /* pasted */
-      v.split('').slice(0,4).forEach((ch,k)=>{ if(arr[k]) arr[k].value=ch; });
-      (arr[Math.min(v.length,4)-1]||arr[3]).focus();
+      v.split('').slice(0,6).forEach((ch,k)=>{ if(arr[k]) arr[k].value=ch; });
+      (arr[Math.min(v.length,6)-1]||arr[arr.length-1]).focus();
       return;
     }
     box.value=v;
@@ -1219,9 +1562,11 @@ document.addEventListener('keydown', ev=>{
   if(ev.target.id==='gemail'||ev.target.id==='gname') continueAuth();
   if(ev.target.classList && ev.target.classList.contains('cardi')) ev.target.click();
 });
+let _searchTimer;
 $('#q').addEventListener('input', ev=>{
   state.q = ev.target.value.trim().toLowerCase();
-  renderGrid();
+  if(API_MODE){ clearTimeout(_searchTimer); _searchTimer=setTimeout(loadFeed, 280); }
+  else renderGrid();
 });
 </script>
 </body>

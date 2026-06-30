@@ -14,6 +14,7 @@ import favoriteRoutes from './routes/favorites.js';
 import chatRoutes from './routes/chats.js';
 import uploadRoutes from './routes/uploads.js';
 import safetyRoutes from './routes/safety.js';
+import paymentRoutes, { webhookHandler } from './routes/payments.js';
 
 const app = express();
 app.set('trust proxy', 1); // correct client IPs behind a load balancer
@@ -31,8 +32,13 @@ app.use(cors({
   credentials: true,
 }));
 
+// --- Stripe webhook needs the RAW body for signature verification, so it is
+//     registered before express.json and skipped by the JSON parser below. ---
+app.post('/api/payments/webhook', express.raw({ type: '*/*' }), webhookHandler);
+
 // --- body parsing (small limit; images go straight to S3, not through here) ---
-app.use(express.json({ limit: '64kb' }));
+app.use((req, res, next) =>
+  req.path === '/api/payments/webhook' ? next() : express.json({ limit: '64kb' })(req, res, next));
 
 // --- lightweight request log ---
 app.use((req, _res, next) => {
@@ -54,6 +60,7 @@ app.use('/api/favorites', apiLimiter, favoriteRoutes);
 app.use('/api/conversations', apiLimiter, chatRoutes);
 app.use('/api/uploads', uploadRoutes);
 app.use('/api/safety', safetyRoutes);
+app.use('/api/payments', apiLimiter, paymentRoutes);
 
 // --- 404 + error handler ---
 app.use((_req, res) => res.status(404).json({ error: 'not_found' }));
