@@ -21,8 +21,8 @@ services:
     plan: free
     rootDir: backend
     buildCommand: npm install
-    preDeployCommand: npm run migrate     # runs DB migrations before each deploy
-    startCommand: npm start
+    # Free tier doesn't allow preDeployCommand, so migrate on boot (idempotent).
+    startCommand: npm run migrate && npm start
     healthCheckPath: /health
     autoDeploy: true
     envVars:
