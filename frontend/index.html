@@ -118,6 +118,9 @@ body{
 .schip{display:flex;align-items:center;gap:10px;background:var(--yellow);border:2px solid var(--ink);border-radius:14px;box-shadow:0 2px 0 var(--ink);padding:12px 13px;font-weight:800;font-size:14.5px}
 .schip span{flex:1;min-width:0}
 .schip .x{flex:none;width:27px;height:27px;display:grid;place-items:center;background:var(--card);border:2px solid var(--ink);border-radius:9px;font-size:12px}
+.authtabs{display:flex;gap:4px;margin-top:24px;background:var(--sunk);border:2px solid var(--ink);border-radius:14px;padding:4px}
+.authtab{flex:1;text-align:center;padding:11px 0;font-size:14px;font-weight:800;color:var(--ink-soft);border-radius:10px;transition:background .12s,color .12s}
+.authtab.on{background:var(--yellow);color:var(--ink);box-shadow:0 2px 0 var(--ink)}
 .gbtn{margin-top:28px;width:100%;background:var(--yellow);border:2.5px solid var(--ink);border-radius:18px;padding:17px;font-size:18px;font-weight:800;box-shadow:0 4px 0 var(--ink);transition:transform .08s,box-shadow .08s}
 .gbtn:active{transform:translateY(3px);box-shadow:0 1px 0 var(--ink)}
 .glink{display:block;margin:16px auto 0;font-size:13px;font-weight:700;color:var(--ink-soft);text-decoration:underline;text-underline-offset:3px}
@@ -389,22 +392,30 @@ main::-webkit-scrollbar{display:none}
       <div class="fringe"></div>
     </section>
 
-    <!-- ====== gate: login ====== -->
-    <section class="gate" id="gate-auth" hidden aria-label="Log in">
+    <!-- ====== gate: login / sign up ====== -->
+    <section class="gate" id="gate-auth" hidden aria-label="Log in or sign up">
       <div class="glogo">dibs<span class="star">✶</span></div>
-      <h2 class="gh2">log in to your campus</h2>
-      <div class="gsub">students only — your .edu is the key 🗝️</div>
 
-      <label class="lab" for="schoolq">your school</label>
-      <div class="gfield">
-        <div id="schoolPick">
-          <input class="fin" id="schoolq" placeholder="start typing… ‘NYU’, ‘Michigan’, ‘UCLA’" autocomplete="off" aria-label="Search your school">
-          <div class="slist" id="slist" hidden></div>
+      <div class="authtabs" id="authtabs" role="tablist" aria-label="Log in or sign up">
+        <button class="authtab on" id="tab-login" data-act="authmode" data-mode="login" role="tab" aria-selected="true">log in</button>
+        <button class="authtab" id="tab-signup" data-act="authmode" data-mode="signup" role="tab" aria-selected="false">sign up</button>
+      </div>
+
+      <h2 class="gh2" id="authh2">log in to your campus</h2>
+      <div class="gsub" id="authsub">students only — your .edu is the key 🗝️</div>
+
+      <div id="signupSchool" hidden>
+        <label class="lab" for="schoolq">your school</label>
+        <div class="gfield">
+          <div id="schoolPick">
+            <input class="fin" id="schoolq" placeholder="start typing… ‘NYU’, ‘Michigan’, ‘UCLA’" autocomplete="off" aria-label="Search your school">
+            <div class="slist" id="slist" hidden></div>
+          </div>
+          <div id="schipBox" hidden>
+            <div class="schip"><span id="schipName"></span><button class="x" data-act="clearschool" aria-label="Change school">✕</button></div>
+          </div>
+          <div class="ghint">🇺🇸 <b>US campuses first</b> — more countries rolling out soon</div>
         </div>
-        <div id="schipBox" hidden>
-          <div class="schip"><span id="schipName"></span><button class="x" data-act="clearschool" aria-label="Change school">✕</button></div>
-        </div>
-        <div class="ghint">🇺🇸 <b>US campuses first</b> — more countries rolling out soon</div>
       </div>
 
       <label class="lab" for="gemail">school email</label>
@@ -413,9 +424,11 @@ main::-webkit-scrollbar{display:none}
         <div class="ghint">must end in <b>.edu</b> — that's the whole point ✓</div>
       </div>
 
-      <label class="lab" for="gname">first name</label>
-      <div class="gfield">
-        <input class="fin" id="gname" maxlength="16" placeholder="what your floor calls you">
+      <div id="signupName" hidden>
+        <label class="lab" for="gname">first name</label>
+        <div class="gfield">
+          <input class="fin" id="gname" maxlength="16" placeholder="what your floor calls you">
+        </div>
       </div>
 
       <button class="gbtn" id="authbtn" data-act="continueAuth">send my code →</button>
@@ -754,7 +767,7 @@ const VIBES = ['🧊','💡','📚','🪞','🪑','🚲','🖥️','🧶','🫖'
 
 /* ================= state ================= */
 const state = {
-  tab:'home', cat:'all', q:'',
+  tab:'home', cat:'all', q:'', authMode:'login',
   saved:new Set(), myDibs:new Set(),
   activeChat:null, detail:null, from:'home',
   user:{name:'Alex', school:null, email:''},
@@ -768,7 +781,7 @@ const $$ = s => [...document.querySelectorAll(s)];
 const fmt = p => p===0 ? 'FREE' : '€'+p;
 const tint = c => TINT[c]||TINT.other;
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-const pillName = sc => sc.s || (sc.n.length>16 ? sc.n.slice(0,15)+'…' : sc.n);
+const pillName = sc => sc ? (sc.s || (sc.n.length>16 ? sc.n.slice(0,15)+'…' : sc.n)) : 'campus';
 let toastTimer;
 function toast(msg){
   const t=$('#toast'); t.textContent=msg; t.classList.add('show');
@@ -920,18 +933,32 @@ function clearSchool(){
   $('#schipBox').hidden=true; $('#schoolPick').hidden=false;
   $('#schoolq').value=''; $('#schoolq').focus();
 }
+function setAuthMode(mode){
+  state.authMode = mode;
+  const isLogin = mode==='login';
+  $('#tab-login').classList.toggle('on', isLogin);
+  $('#tab-login').setAttribute('aria-selected', String(isLogin));
+  $('#tab-signup').classList.toggle('on', !isLogin);
+  $('#tab-signup').setAttribute('aria-selected', String(!isLogin));
+  $('#signupSchool').hidden = isLogin;
+  $('#signupName').hidden = isLogin;
+  $('#authh2').textContent = isLogin ? 'log in to your campus' : 'join your campus';
+  $('#authsub').textContent = isLogin ? 'students only — your .edu is the key 🗝️' : 'new here? let’s get your campus set up ✨';
+  setTimeout(()=> (isLogin ? $('#gemail') : $('#schoolq')).focus(), 60);
+}
 async function continueAuth(){
+  const mode = state.authMode || 'login';
   const email=$('#gemail').value.trim().toLowerCase();
   const name=$('#gname').value.trim();
-  if(!state.user.school){ shake($('#authbtn')); toast('pick your school first 🏫'); $('#schoolq').focus(); return; }
+  if(mode==='signup' && !state.user.school){ shake($('#authbtn')); toast('pick your school first 🏫'); $('#schoolq').focus(); return; }
   if(!/^[^\s@]+@[^\s@]+\.edu$/.test(email)){ shake($('#authbtn')); toast('that needs to be a .edu email ✉️'); $('#gemail').focus(); return; }
   state.user.email=email;
-  if(name) state.user.name = name.charAt(0).toUpperCase()+name.slice(1);
+  if(mode==='signup' && name) state.user.name = name.charAt(0).toUpperCase()+name.slice(1);
 
   if(API_MODE){
     const btn=$('#authbtn'); const label=btn.textContent; btn.textContent='sending…'; btn.disabled=true;
     try{
-      await API.requestCode(email, state.user.school.id, name||undefined);
+      await API.requestCode(email, mode==='signup' ? state.user.school.id : undefined, mode==='signup' ? (name||undefined) : undefined);
     }catch(e){ btn.textContent=label; btn.disabled=false; shake(btn); toast(apiError(e,'couldn’t send a code')); return; }
     btn.textContent=label; btn.disabled=false;
   }
@@ -1433,7 +1460,8 @@ document.addEventListener('click', ev=>{
   if(!el) return;
   const act = el.dataset.act;
 
-  if(act==='start'){ $('#splash').classList.add('gone'); $('#gate-auth').hidden=false; setTimeout(()=>$('#schoolq').focus(),80); }
+  if(act==='start'){ $('#splash').classList.add('gone'); $('#gate-auth').hidden=false; setAuthMode('login'); }
+  else if(act==='authmode'){ setAuthMode(el.dataset.mode); }
   else if(act==='pickschool'){ pickSchool(el.dataset.n, el.dataset.id); }
   else if(act==='clearschool'){ clearSchool(); }
   else if(act==='continueAuth'){ continueAuth(); }
