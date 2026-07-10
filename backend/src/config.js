@@ -39,9 +39,9 @@ export const config = {
     'http://localhost:5173,http://localhost:3000,capacitor://localhost,http://localhost,https://localhost')
     .split(',').map(s => s.trim()).filter(Boolean),
 
-  // Email (Resend by default; dev logs to console)
-  resendApiKey: process.env.RESEND_API_KEY || '',
-  emailFrom: process.env.EMAIL_FROM || 'dibs <login@dibs.app>',
+// Email (Nodemailer + Gmail)
+  gmailUser:        process.env.GMAIL_USER || '',
+  gmailAppPassword: process.env.GMAIL_APP_PASSWORD || '',
 
   // Object storage (S3 / Cloudflare R2 / any S3-compatible)
   s3Region:   process.env.S3_REGION   || 'us-east-1',
