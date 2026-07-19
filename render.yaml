@@ -22,7 +22,7 @@ services:
     rootDir: backend
     buildCommand: npm install
     # Free tier doesn't allow preDeployCommand, so migrate on boot (idempotent).
-    startCommand: npm run migrate && npm start
+    startCommand: npm run migrate && npm run seed && npm start
     healthCheckPath: /health
     autoDeploy: true
     envVars:
