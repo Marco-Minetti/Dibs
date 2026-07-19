@@ -49,9 +49,9 @@ services:
         value: eur
 
       # ---- Fill these in the Render dashboard (kept out of git) ----
-      - key: RESEND_API_KEY          # email login codes (else they print to logs)
+      - key: GMAIL_USER              # email login codes via Gmail
         sync: false
-      - key: EMAIL_FROM
+      - key: GMAIL_APP_PASSWORD
         sync: false
       - key: S3_REGION
         sync: false
